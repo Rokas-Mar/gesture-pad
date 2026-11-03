@@ -246,15 +246,15 @@
         background-image: radial-gradient(var(--dot) 1px, transparent 1.2px);
         background-size: 18px 18px;
         border-bottom: 1px solid var(--border);
-        padding: 40px 20px 36px;
+        padding: 28px 20px 24px;
         display: grid;
-        grid-template-columns: minmax(170px, 230px) minmax(300px, 430px) minmax(
+        grid-template-columns: minmax(170px, 230px) minmax(240px, 344px) minmax(
             170px,
             230px
           );
         justify-content: center;
         align-items: center;
-        gap: 56px;
+        gap: 48px;
       }
       .links {
         position: absolute;
@@ -1605,7 +1605,7 @@
         .board-wrap {
           grid-column: 1 / -1;
           grid-row: 1;
-          max-width: 420px;
+          max-width: 336px;
           width: 100%;
           margin: 0 auto;
         }
@@ -2124,6 +2124,15 @@
           unit: "",
           help: "How different a pixel must be from the learned background to count as hand.",
         },
+        bgAbsorbMs: {
+          label: "Forget still things after",
+          min: 0,
+          max: 3000,
+          step: 50,
+          unit: "ms",
+          zero: "Never",
+          help: "Anything in view that stops moving (your head, a mug) becomes background after this long, so it can't block swipes.",
+        },
         swipeTravel: {
           label: "Minimum travel",
           min: 0.1,
@@ -2274,6 +2283,7 @@
           confOn: 0.6,
           trackCov: 0.05,
           diffThr: 28,
+          bgAbsorbMs: 700,
           swipeTravel: 0.35,
           swipeMaxMs: 800,
           palmDark: 0.35,
@@ -2626,6 +2636,7 @@
               "swipeMaxMs",
               "confOn",
               "trackCov",
+              "bgAbsorbMs",
               "camRotate",
               "mirror",
               "cooldownMs",
@@ -2803,7 +2814,7 @@
         <div class="card"><div class="section-title">Gesture gate</div>${gateMetersHtml()}</div>
         <div class="card"><div class="section-title">Hand pose model</div>${modelBarsHtml()}</div>
         ${captureCardHtml()}
-        ${tuneCard("Camera", ["camRotate", "lockExposure", "diffThr", "covLow", "covHigh", "streamFps"])}
+        ${tuneCard("Camera", ["camRotate", "lockExposure", "diffThr", "bgAbsorbMs", "covLow", "covHigh", "streamFps"])}
       </div>
     </div>`;
         updateRangeFills(p);
@@ -3767,8 +3778,10 @@
           text = `Swipe ignored: too slow (${Math.round(r.value)} ms, limit ${t.swipeMaxMs} ms)`;
         else if (r.reason === "short_travel")
           text = `Swipe ignored: moved ${Math.round(r.value * 100)}% of the frame, needs ${Math.round(t.swipeTravel * 100)}%`;
+        else if (r.reason === "still")
+          text = "Something still in view, learning it as background";
         else text = "Gesture ignored";
-        flash($("feed"), "reject", 900);
+        if (r.reason !== "still") flash($("feed"), "reject", 900);
         const m = $("rejectMsg");
         if (m) {
           m.textContent = text;
@@ -3835,7 +3848,7 @@
     </div>
     <div class="cap-count" id="capCount"></div>
     <div class="thumbs" id="thumbs"></div>
-    <p class="subtle">Files are named like <code>peace.0001.png</code>, so Edge Impulse’s uploader takes the label from the name. Record “none” too: empty desk, hand passing through, half-covered lens.</p></div>`;
+    <p class="subtle">Files are named like <code>peace.0001.png</code></p></div>`;
       }
       function renderCapture() {
         const btn = $("btnRec");

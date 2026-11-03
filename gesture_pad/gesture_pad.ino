@@ -50,7 +50,7 @@
 #error "Set Tools > USB Mode to USB-OTG (TinyUSB)"
 #endif
 
-#define FW_VERSION "0.2.2"
+#define FW_VERSION "0.2.3"
 
 // ============ PINS (from the KiCad schematic) ============
 // Diodes: anode on the switch/column side, cathode on the row -> rows are driven LOW
@@ -120,6 +120,7 @@ struct Action {
   X(float, confOn,       0.60f)/* fuzzy confidence needed to accept a swipe */   \
   X(float, trackCov,     0.05f)/* coverage that starts/ends a motion window */   \
   X(int,   diffThr,      28)   /* per-pixel background difference threshold */   \
+  X(int,   bgAbsorbMs,   700)  /* still foreground becomes background after this */ \
   X(float, swipeTravel,  0.35f)/* min horizontal travel, fraction of frame */    \
   X(int,   swipeMaxMs,   800)  /* max swipe duration */                          \
   X(float, palmDark,     0.35f)/* frame mean < this * background -> covered */   \
@@ -495,6 +496,8 @@ static void visionTask(void*) {
   static uint8_t full[FN];
   static uint8_t small[SN];
   static float bg[SN];
+  static uint8_t prevSmall[SN];   // last frame, to tell still pixels from moving ones
+  static uint8_t stillN[SN];      // frames a foreground pixel has stayed unchanged
   static uint8_t framePkt[4 + FN];
   bool bgInit = false;
 
@@ -612,20 +615,34 @@ static void visionTask(void*) {
     float meanF = (float)sum / SN;
 
     if (!bgInit) {
-      for (int i = 0; i < SN; i++) bg[i] = small[i];
+      for (int i = 0; i < SN; i++) { bg[i] = small[i]; prevSmall[i] = small[i]; stillN[i] = 0; }
       bgInit = true;
     }
     float bgSum = 0;
     for (int i = 0; i < SN; i++) bgSum += bg[i];
     float bgMean = max(1.f, bgSum / SN);
 
-    // Foreground: pixels that differ from the learned background
+    // Foreground: pixels that differ from the learned background.
+    // Foreground that stops changing (a head, a mug, a shadow) is absorbed into the
+    // background after bgAbsorbMs, while a moving hand keeps changing and stays
+    // foreground. Frozen while the lens is dark so the palm cover isn't learned away.
+    const bool bgFrozen = palmActive || darkSince;
+    const int absorbN = t.bgAbsorbMs > 0 ? max(2, (int)(t.bgAbsorbMs * max(fps, 10.f) / 1000.f)) : 0;
+    const int stillThr = max(4, t.diffThr / 3);
     int cnt = 0;
     float sx = 0;
     for (int y = 0; y < SH; y++)
       for (int x = 0; x < SW; x++) {
         int i = y * SW + x;
-        if (fabsf((float)small[i] - bg[i]) > t.diffThr) { cnt++; sx += x; }
+        if (fabsf((float)small[i] - bg[i]) > t.diffThr) {
+          cnt++; sx += x;
+          if (abs((int)small[i] - (int)prevSmall[i]) <= stillThr) { if (stillN[i] < 255) stillN[i]++; }
+          else stillN[i] = 0;
+          if (absorbN && !bgFrozen && stillN[i] >= absorbN) { bg[i] = small[i]; stillN[i] = 0; }
+        } else {
+          stillN[i] = 0;
+        }
+        prevSmall[i] = small[i];
       }
     float cov = (float)cnt / SN;
     float cx = cnt ? (sx / cnt) / (SW - 1) : 0.5f;
@@ -673,10 +690,12 @@ static void visionTask(void*) {
       peakCov = max(peakCov, cov);
       if (palmActive || poseHeld) tainted = true;
 
-      if (now - winStart > 5000 && !palmActive && !poseHeld) {
-        // Something parked in view: re-learn background instead of waiting forever
+      if (now - winStart > (uint32_t)t.swipeMaxMs + 300 && !palmActive && !poseHeld) {
+        // Too long to be a swipe: something is parked in view. Give up now instead of
+        // blocking swipes; the still pixels get absorbed into the background shortly.
         inWin = false;
-        for (int i = 0; i < SN; i++) bg[i] = small[i];
+        if (!tainted) sendReject("swipe", "still", now - winStart);
+        if (now - winStart > 3000) for (int i = 0; i < SN; i++) bg[i] = small[i];
       } else if (quiet >= 2) {
         inWin = false;
         uint32_t dt = now - winStart;
@@ -697,10 +716,12 @@ static void visionTask(void*) {
     }
     swipeWindow = inWin;
 
-    // Background learns only while nothing is happening
-    if (!inWin && !palmActive && !poseHeld) {
+    // Background follows slow light changes. While nothing is happening every pixel
+    // learns; during a swipe only pixels the hand isn't on, so the hand isn't learned.
+    if (!bgFrozen && !poseHeld) {
       const float a = 0.05f;
-      for (int i = 0; i < SN; i++) bg[i] += a * ((float)small[i] - bg[i]);
+      for (int i = 0; i < SN; i++)
+        if (!inWin || fabsf((float)small[i] - bg[i]) <= t.diffThr) bg[i] += a * ((float)small[i] - bg[i]);
     }
 
     // ---- FPS ----
